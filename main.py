@@ -66,11 +66,3 @@ class PyTweetHarvest:
         )
 
         return pd.read_csv(buffer)
-    
-if __name__ == "__main__":
-    import logging_setup
-    logger = logging_setup.setup_logging()
-    logger.info("PyTweetHarvest module loaded successfully.")
-    harvest = PyTweetHarvest(access_token="3371b69b1691c9fe879e812173738619aa4f6fd7")
-    df = harvest.crawl(keyword="Python", limit=20)
-    print(df.head())

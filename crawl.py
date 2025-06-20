@@ -132,7 +132,6 @@ async def crawl(
                         break
                     try:
                         logger.debug("Waiting for timeline response...")
-                        # TIMEOUT DIPERKECIL (3 detik)
                         response = await wait_for_response_url(
                             page, [r"SearchTimeline", r"TweetDetail"], timeout=6000
                         )
@@ -210,11 +209,12 @@ async def crawl(
                                 .get("result", {})
                                 .get("legacy")
                             )
+                            user_core = result.get("core").get("user_results", {}).get("result", {}).get("core", {})
                             if not legacy or not user_legacy:
                                 continue
                             row = {
                                 **{k: legacy.get(k, "") for k in FILTERED_FIELDS if k in legacy},
-                                "username": user_legacy.get("screen_name", ""),
+                                "username": user_core.get("screen_name", None),
                                 "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
                                 "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
                                 "location": user_legacy.get("location", ""),
@@ -360,7 +360,7 @@ async def crawl_buffer(
                             logger.info("Timeout waiting for response (%d/10), scrolling down.", timeout_count)
                             await scroll_up_step(page)
                             await scroll_down(page)
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(0.7)
                             if timeout_count >= 10:
                                 logger.error("Too many timeouts, aborting scroll_and_save.")
                                 break
