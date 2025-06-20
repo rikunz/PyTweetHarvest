@@ -2,6 +2,9 @@
 
 A simple tool to crawl tweets from X (Twitter) using Playwright.
 
+> **Inspired by:**  
+> This project is inspired by the flow and approach of [helmisatria/tweet-harvest](https://github.com/helmisatria/tweet-harvest), but is tailored specifically for Python and Pythonic workflows.
+
 ## Installation
 
 ```bash
@@ -16,7 +19,7 @@ playwright install
 Run the command line interface similar to the original project:
 
 ```bash
-python -m PyTweetHarvest.cli --token YOUR_TOKEN --search-keyword "open ai" --limit 20
+python -m PyTweetHarvest.cli --token YOUR_TOKEN --search-keyword "Indonesia" --limit 20
 ```
 
 ### Library
@@ -25,7 +28,7 @@ python -m PyTweetHarvest.cli --token YOUR_TOKEN --search-keyword "open ai" --lim
 from PyTweetHarvest import PyTweetHarvest
 
 harvester = PyTweetHarvest(access_token="YOUR_TOKEN")
-df = harvester.crawl(keyword="open ai", limit=20)
+df = harvester.crawl(keyword="Indonesia", limit=20)
 print(df.head())
 ```
 
