@@ -1,5 +1,3 @@
-"""Main entry for using PyTweetHarvest as a library."""
-
 import asyncio
 import io
 from typing import Optional
@@ -68,4 +66,3 @@ class PyTweetHarvest:
         )
 
         return pd.read_csv(buffer)
-
