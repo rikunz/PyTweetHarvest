@@ -51,7 +51,7 @@ async def crawl(
     delay_every_100_tweets_seconds: int = 10,
     debug_mode: bool = False,
     output_filename: str = None,
-    search_tab: str = "LATEST",
+    search_tab: str = "TOP",
     csv_insert_mode: str = "REPLACE",
 ):
     crawl_mode = "DETAIL" if tweet_thread_url else "SEARCH"
@@ -273,7 +273,7 @@ async def crawl_buffer(
     delay_each_tweet_seconds: int = 3,
     delay_every_100_tweets_seconds: int = 10,
     debug_mode: bool = False,
-    search_tab: str = "LATEST",
+    search_tab: str = "TOP",
     csv_insert_mode: str = "REPLACE",
 ) -> io.StringIO:
     """Crawl tweets but return the CSV data as an in-memory buffer."""
