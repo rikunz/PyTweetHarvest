@@ -4,7 +4,7 @@ BASE_TIMEOUT = 60_000  # ms
 MAXIMUM_TIMEOUT = 600_000  # ms
 RATIO = 2
 
-from ..env import ENABLE_EXPONENTIAL_BACKOFF
+from env import ENABLE_EXPONENTIAL_BACKOFF
 
 
 def calculate_for_rate_limit(attempt: int) -> int:

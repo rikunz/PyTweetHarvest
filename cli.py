@@ -1,8 +1,8 @@
 import argparse
 import asyncio
 
-from .crawl import crawl
-from .env import ACCESS_TOKEN
+from crawl import crawl
+from env import ACCESS_TOKEN
 
 
 def main():

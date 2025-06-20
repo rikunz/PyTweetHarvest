@@ -130,3 +130,6 @@ $RECYCLE.BIN/
 *.ipr
 *.iws
 .idea/
+
+# output
+tweets-data/
