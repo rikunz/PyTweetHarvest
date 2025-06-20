@@ -429,11 +429,12 @@ async def crawl_buffer(
                                 .get("result", {})
                                 .get("legacy")
                             )
+                            user_core = result.get("core").get("user_results", {}).get("result", {}).get("core", {})
                             if not legacy or not user_legacy:
                                 continue
                             row = {
                                 **{k: legacy.get(k, "") for k in FILTERED_FIELDS if k in legacy},
-                                "username": user_legacy.get("screen_name", ""),
+                                "username": user_core.get("screen_name", None),
                                 "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
                                 "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
                                 "location": user_legacy.get("location", ""),
