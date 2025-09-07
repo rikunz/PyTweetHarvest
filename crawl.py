@@ -2,6 +2,7 @@ import asyncio
 import io
 from pathlib import Path
 import pandas as pd
+from typing import Optional
 from logging_setup import logger
 
 from playwright.async_api import async_playwright
@@ -15,6 +16,7 @@ from constants import (
 from env import HEADLESS_MODE
 from features.input_keywords import input_keywords
 from features.listen_network_requests import listen_network_requests
+from features.cache_system import PlaywrightCache
 from helpers.page_helper import scroll_down, scroll_up_step
 from features.exponential_backoff import calculate_for_rate_limit
 import re
@@ -42,15 +44,15 @@ async def wait_for_response_url(page, keywords, timeout=6000):
 async def crawl(
     *,
     access_token: str,
-    search_keywords: str = None,
-    tweet_thread_url: str = None,
-    search_from_date: str = None,
-    search_to_date: str = None,
+    search_keywords: str = "",
+    tweet_thread_url: str = "",
+    search_from_date: str = "",
+    search_to_date: str = "",
     target_tweet_count: int = 10,
     delay_each_tweet_seconds: int = 3,
     delay_every_100_tweets_seconds: int = 10,
     debug_mode: bool = False,
-    output_filename: str = None,
+    output_filename: Optional[str] = None,
     search_tab: str = "TOP",
     csv_insert_mode: str = "REPLACE",
 ):
@@ -64,6 +66,11 @@ async def crawl(
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     tweets = []
+
+    # Initialize cache system
+    cache = PlaywrightCache(cache_dir="twitter_cache")
+    cache_stats = cache.get_cache_stats()
+    logger.info(f"Cache initialized: {cache_stats['total_files']} files, {cache_stats['total_size_mb']} MB")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
@@ -87,11 +94,13 @@ async def crawl(
         )
         page = await context.new_page()
         page.set_default_timeout(60 * 1000)
+        
+        # Setup integrated cache interceptor within network requests
         timeline_data = []
 
         async def on_timeline(data):
             timeline_data.append(data)
-        await listen_network_requests(page, on_timeline)
+        await listen_network_requests(page, on_timeline, cache)
 
         async def start_crawl(twitter_search_url=None):
             if twitter_search_url is None:
@@ -171,6 +180,9 @@ async def crawl(
 
                         rate_limit_count = 0
                         entries = []
+                        if not data:
+                            logger.error("No data in response, breaking.")
+                            break
                         if data.get("data", {}).get("threaded_conversation_with_injections_v2"):
                             entries = (
                                 data["data"]["threaded_conversation_with_injections_v2"]["instructions"][0]["entries"]
@@ -203,21 +215,40 @@ async def crawl(
                             if not result:
                                 continue
                             legacy = result.get("legacy") or result.get("tweet", {}).get("legacy")
-                            user_legacy = (
-                                result.get("core", {})
-                                .get("user_results", {})
-                                .get("result", {})
-                                .get("legacy")
-                            )
-                            user_core = result.get("core").get("user_results", {}).get("result", {}).get("core", {})
+                            
+                            # Safe navigation for user data with null checks
+                            core = result.get("core") or {}
+                            user_results = core.get("user_results") or {}
+                            user_result = user_results.get("result") or {}
+                            user_legacy = user_result.get("legacy")
+                            user_core = user_result.get("core") or {}
+                            
                             if not legacy or not user_legacy:
                                 continue
+                                
+                            # Safe navigation for entities and media
+                            entities = legacy.get("entities") or {}
+                            media_list = entities.get("media") or []
+                            image_url = ""
+                            if media_list and len(media_list) > 0:
+                                image_url = media_list[0].get("media_url_https", "")
+                            
+                            # Safe navigation for location
+                            location = ""
+                            user_results_data = core.get("user_results")
+                            if user_results_data:
+                                user_result_data = user_results_data.get("result")
+                                if user_result_data:
+                                    user_location_data = user_result_data.get("location")
+                                    if user_location_data:
+                                        location = user_location_data.get("location", "")
+                            
                             row = {
                                 **{k: legacy.get(k, "") for k in FILTERED_FIELDS if k in legacy},
                                 "username": user_core.get("screen_name", None),
-                                "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
-                                "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
-                                "location": user_legacy.get("location", ""),
+                                "tweet_url": f"https://x.com/{user_core.get('screen_name', None)}/status/{legacy.get('id_str')}",
+                                "image_url": image_url,
+                                "location": location,
                                 "in_reply_to_screen_name": legacy.get("in_reply_to_screen_name", ""),
                             }
                             tweets.append(row)
@@ -265,10 +296,10 @@ async def crawl(
 async def crawl_buffer(
     *,
     access_token: str,
-    search_keywords: str = None,
-    tweet_thread_url: str = None,
-    search_from_date: str = None,
-    search_to_date: str = None,
+    search_keywords: str = "",
+    tweet_thread_url: str = "",
+    search_from_date: str = "",
+    search_to_date: str = "",
     target_tweet_count: int = 10,
     delay_each_tweet_seconds: int = 3,
     delay_every_100_tweets_seconds: int = 10,
@@ -277,13 +308,16 @@ async def crawl_buffer(
     csv_insert_mode: str = "REPLACE",
 ) -> io.StringIO:
     """Crawl tweets but return the CSV data as an in-memory buffer."""
-    crawl_mode = "DETAIL" if tweet_thread_url else "SEARCH"
+    crawl_mode = "DETAIL" if tweet_thread_url.strip() else "SEARCH"
     is_detail_mode = crawl_mode == "DETAIL"
     is_search_mode = crawl_mode == "SEARCH"
 
     buffer = io.StringIO()
     tweets = []
 
+    # Initialize cache system
+    cache = PlaywrightCache(cache_dir="twitter_cache")
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS_MODE)
         context = await browser.new_context(
@@ -306,11 +340,13 @@ async def crawl_buffer(
         )
         page = await context.new_page()
         page.set_default_timeout(60 * 1000)
+        
+        # Setup integrated cache interceptor within network requests
         timeline_data = []
 
         async def on_timeline(data):
             timeline_data.append(data)
-        await listen_network_requests(page, on_timeline)
+        await listen_network_requests(page, on_timeline, cache)
 
         async def start_crawl(twitter_search_url=None):
             if twitter_search_url is None:
@@ -391,6 +427,9 @@ async def crawl_buffer(
 
                         rate_limit_count = 0
                         entries = []
+                        if not data:
+                            logger.error("No data in response, breaking.")
+                            break
                         if data.get("data", {}).get("threaded_conversation_with_injections_v2"):
                             entries = (
                                 data["data"]["threaded_conversation_with_injections_v2"]["instructions"][0]["entries"]
@@ -420,24 +459,44 @@ async def crawl_buffer(
                                 item.get("tweet_results", {})
                                 .get("result")
                             )
+
                             if not result:
                                 continue
                             legacy = result.get("legacy") or result.get("tweet", {}).get("legacy")
-                            user_legacy = (
-                                result.get("core", {})
-                                .get("user_results", {})
-                                .get("result", {})
-                                .get("legacy")
-                            )
-                            user_core = result.get("core").get("user_results", {}).get("result", {}).get("core", {})
+                            
+                            # Safe navigation for user data with null checks
+                            core = result.get("core") or {}
+                            user_results = core.get("user_results") or {}
+                            user_result = user_results.get("result") or {}
+                            user_legacy = user_result.get("legacy")
+                            user_core = user_result.get("core") or {}
+                            
                             if not legacy or not user_legacy:
                                 continue
+                                
+                            # Safe navigation for entities and media
+                            entities = legacy.get("entities") or {}
+                            media_list = entities.get("media") or []
+                            image_url = ""
+                            if media_list and len(media_list) > 0:
+                                image_url = media_list[0].get("media_url_https", "")
+                            
+                            # Safe navigation for location
+                            location = ""
+                            user_results_data = core.get("user_results")
+                            if user_results_data:
+                                user_result_data = user_results_data.get("result")
+                                if user_result_data:
+                                    user_location_data = user_result_data.get("location")
+                                    if user_location_data:
+                                        location = user_location_data.get("location", "")
+                            
                             row = {
                                 **{k: legacy.get(k, "") for k in FILTERED_FIELDS if k in legacy},
                                 "username": user_core.get("screen_name", None),
-                                "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
-                                "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
-                                "location": user_legacy.get("location", ""),
+                                "tweet_url": f"https://x.com/{user_core.get('screen_name', None)}/status/{legacy.get('id_str')}",
+                                "image_url": image_url,
+                                "location": location,
                                 "in_reply_to_screen_name": legacy.get("in_reply_to_screen_name", ""),
                             }
                             tweets.append(row)

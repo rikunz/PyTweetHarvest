@@ -1,6 +1,7 @@
+from typing import Optional
 from playwright.async_api import Page
 
-async def input_keywords(page: Page, *, search_keywords: str = "", from_date: str = None, to_date: str = None):
+async def input_keywords(page: Page, *, search_keywords: Optional[str] = "", from_date: Optional[str] = None, to_date: Optional[str] = None):
     await page.wait_for_selector('input[name="allOfTheseWords"]', state='visible')
     await page.click('input[name="allOfTheseWords"]')
 

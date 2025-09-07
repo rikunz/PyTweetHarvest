@@ -1,8 +1,9 @@
 import logging
+from os import getenv
 
-def setup_logging(log_file='app.log'):
+def setup_logging(log_file='app.log', level=logging.DEBUG):
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
@@ -12,4 +13,4 @@ def setup_logging(log_file='app.log'):
     )
     return logging.getLogger("AppLogger")
 
-logger = setup_logging()
+logger = setup_logging(log_file=getenv('LOG_FILE', 'app.log'), level=logging.DEBUG if getenv('LOG_LEVEL') == 'DEBUG' else logging.INFO)
