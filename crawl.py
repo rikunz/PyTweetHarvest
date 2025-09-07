@@ -2,6 +2,7 @@ import asyncio
 import io
 from pathlib import Path
 import pandas as pd
+from typing import Optional
 from logging_setup import logger
 
 from playwright.async_api import async_playwright
@@ -39,18 +40,78 @@ async def wait_for_response_url(page, keywords, timeout=6000):
         page.remove_listener("response", on_response)
         return None
 
+async def block_media_requests(route, request):
+    """
+    Block unnecessary media requests while allowing essential functionality.
+    """
+    url = request.url.lower()
+    resource_type = request.resource_type
+    
+    # Block image and video files
+    if resource_type in ['image', 'media']:
+        logger.debug(f"Blocked {resource_type}: {url}")
+        await route.abort()
+        return
+    
+    # Block specific file extensions
+    blocked_extensions = [
+        '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico',
+        '.mp4', '.webm', '.mov', '.avi', '.m4v', '.3gp',
+        '.m3u8', '.ts', '.mp3', '.wav', '.ogg'
+    ]
+    
+    # Check if URL ends with blocked extensions (more precise check)
+    for ext in blocked_extensions:
+        if url.endswith(ext) or f"{ext}?" in url or f"{ext}#" in url:
+            logger.debug(f"Blocked media file: {url}")
+            await route.abort()
+            return
+    
+    # Block specific domains that serve media
+    blocked_domains = [
+        'pbs.twimg.com',  # Twitter images
+        'video.twimg.com',  # Twitter videos
+        'abs.twimg.com/video',  # Twitter video assets
+        'ton.twimg.com',  # Twitter media
+        'abs.twimg.com'
+    ]
+    
+    if any(domain in url for domain in blocked_domains):
+        logger.debug(f"Blocked media domain: {url}")
+        await route.abort()
+        return
+    
+    # Allow GraphQL, API calls, and essential resources
+    allowed_patterns = [
+        'graphql',
+        'api.twitter.com',
+        'api.x.com',
+        '/i/api/',
+        '.js',
+        '.css',
+        'websocket'
+    ]
+    
+    # If it's an allowed pattern or not a blocked type, continue
+    if any(pattern in url for pattern in allowed_patterns) or resource_type in ['xhr', 'fetch', 'document', 'script', 'stylesheet', 'websocket']:
+        await route.continue_()
+    else:
+        # Log what we're blocking for debugging
+        logger.debug(f"Blocked misc request: {resource_type} - {url}")
+        await route.abort()
+
 async def crawl(
     *,
     access_token: str,
-    search_keywords: str = None,
-    tweet_thread_url: str = None,
-    search_from_date: str = None,
-    search_to_date: str = None,
+    search_keywords: Optional[str] = None,
+    tweet_thread_url: Optional[str] = None,
+    search_from_date: Optional[str] = None,
+    search_to_date: Optional[str] = None,
     target_tweet_count: int = 10,
     delay_each_tweet_seconds: int = 3,
     delay_every_100_tweets_seconds: int = 10,
     debug_mode: bool = False,
-    output_filename: str = None,
+    output_filename: Optional[str] = None,
     search_tab: str = "TOP",
     csv_insert_mode: str = "REPLACE",
 ):
@@ -86,6 +147,11 @@ async def crawl(
             },
         )
         page = await context.new_page()
+        
+        # Block media requests to reduce bandwidth and improve performance
+        await page.route("**/*", block_media_requests)
+        logger.info("Media request blocking enabled")
+        
         page.set_default_timeout(60 * 1000)
         timeline_data = []
 
@@ -217,7 +283,7 @@ async def crawl(
                                 "username": user_core.get("screen_name", None),
                                 "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
                                 "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
-                                "location": user_legacy.get("location", ""),
+                                "location": result.get("location", {"location": ""}).get("location", ""),
                                 "in_reply_to_screen_name": legacy.get("in_reply_to_screen_name", ""),
                             }
                             tweets.append(row)
@@ -265,10 +331,10 @@ async def crawl(
 async def crawl_buffer(
     *,
     access_token: str,
-    search_keywords: str = None,
-    tweet_thread_url: str = None,
-    search_from_date: str = None,
-    search_to_date: str = None,
+    search_keywords: Optional[str] = None,
+    tweet_thread_url: Optional[str] = None,
+    search_from_date: Optional[str] = None,
+    search_to_date: Optional[str] = None,
     target_tweet_count: int = 10,
     delay_each_tweet_seconds: int = 3,
     delay_every_100_tweets_seconds: int = 10,
@@ -305,6 +371,11 @@ async def crawl_buffer(
             },
         )
         page = await context.new_page()
+        
+        # Block media requests to reduce bandwidth and improve performance  
+        await page.route("**/*", block_media_requests)
+        logger.info("Media request blocking enabled")
+        
         page.set_default_timeout(60 * 1000)
         timeline_data = []
 
@@ -437,7 +508,7 @@ async def crawl_buffer(
                                 "username": user_core.get("screen_name", None),
                                 "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
                                 "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
-                                "location": user_legacy.get("location", ""),
+                                "location": result.get("location", {"location": ""}).get("location", ""),
                                 "in_reply_to_screen_name": legacy.get("in_reply_to_screen_name", ""),
                             }
                             tweets.append(row)
