@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 
 from crawl import crawl
 from env import ACCESS_TOKEN
@@ -21,17 +20,15 @@ def main():
     if not token:
         parser.error("Twitter token is required")
 
-    asyncio.run(
-        crawl(
-            access_token=token,
-            search_keywords=args.search_keyword,
-            tweet_thread_url=args.thread_url,
-            search_from_date=args.from_date,
-            search_to_date=args.to_date,
-            target_tweet_count=args.limit,
-            output_filename=args.output_filename,
-            search_tab=args.tab,
-        )
+    crawl(
+        access_token=token,
+        search_keywords=args.search_keyword,
+        tweet_thread_url=args.thread_url,
+        search_from_date=args.from_date,
+        search_to_date=args.to_date,
+        target_tweet_count=args.limit,
+        output_filename=args.output_filename,
+        search_tab=args.tab,
     )
 
 

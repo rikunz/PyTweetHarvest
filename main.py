@@ -1,4 +1,3 @@
-import asyncio
 import io
 from typing import Optional
 
@@ -14,7 +13,7 @@ class PyTweetHarvest:
     Parameters
     ----------
     access_token : str, optional
-        Twitter access token. If not provided, ``DEV_ACCESS_TOKEN`` from
+        Twitter access token. If not provided, ``ACCESS_TOKEN`` from
         ``.env`` will be used.
     """
 
@@ -23,8 +22,10 @@ class PyTweetHarvest:
         if not self.access_token:
             raise ValueError("Twitter access token is required")
 
-    async def _crawl_async(self, **kwargs) -> io.StringIO:
-        return await crawl_buffer(access_token=self.access_token, **kwargs)
+    def _crawl_sync(self, **kwargs) -> io.StringIO:
+        if not self.access_token:
+            raise ValueError("Twitter access token is required")
+        return crawl_buffer(access_token=self.access_token, **kwargs)
 
     def crawl(
         self,
@@ -54,15 +55,13 @@ class PyTweetHarvest:
             Tab to crawl when searching.
         """
 
-        buffer = asyncio.run(
-            self._crawl_async(
-                search_keywords=keyword,
-                tweet_thread_url=thread_url,
-                search_from_date=from_date,
-                search_to_date=to_date,
-                target_tweet_count=limit,
-                search_tab=tab,
-            )
+        buffer = self._crawl_sync(
+            search_keywords=keyword,
+            tweet_thread_url=thread_url,
+            search_from_date=from_date,
+            search_to_date=to_date,
+            target_tweet_count=limit,
+            search_tab=tab,
         )
 
         return pd.read_csv(buffer)

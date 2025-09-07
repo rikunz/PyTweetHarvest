@@ -1,11 +1,16 @@
-import asyncio
 import io
+import json
+import re
+import time
 from pathlib import Path
 import pandas as pd
 from typing import Optional
 from logging_setup import logger
-
-from playwright.async_api import async_playwright
+from seleniumbase import SB
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 from constants import (
     TWITTER_SEARCH_ADVANCED_URL,
@@ -15,92 +20,107 @@ from constants import (
 )
 from env import HEADLESS_MODE
 from features.input_keywords import input_keywords
-from features.listen_network_requests import listen_network_requests
 from helpers.page_helper import scroll_down, scroll_up_step
 from features.exponential_backoff import calculate_for_rate_limit
-import re
 
-# --- PATCH: Helper tunggu response via event ---
-async def wait_for_response_url(page, keywords, timeout=6000):
+# Global variables for tracking
+response_data = []
+blocked_requests = 0
+
+def wait_for_response_url(driver, keywords, timeout=6000):
     """
-    Wait for a response whose URL contains any of the keywords (as regex substr).
-    Timeout in ms (default 3 seconds).
+    Modified for SeleniumBase: Wait for tweet elements to load on the page
+    instead of waiting for network responses.
     """
-    future = asyncio.get_event_loop().create_future()
-    def on_response(response):
-        for key in keywords:
-            if re.search(key, response.url):
-                page.remove_listener("response", on_response)
-                if not future.done():
-                    future.set_result(response)
-    page.on("response", on_response)
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout/1000:
+        try:
+            # Check if tweet elements are present
+            tweets = driver.find_elements(By.CSS_SELECTOR, '[data-testid="tweet"]')
+            if tweets and len(tweets) > 0:
+                # Return a mock response indicating success
+                return {"success": True, "tweet_count": len(tweets)}
+        except:
+            pass
+        time.sleep(0.5)
+    
+    return None
+
+def set_twitter_auth(driver, access_token):
+    """Set Twitter authentication cookie"""
+    driver.execute_script(f"""
+        document.cookie = 'auth_token={access_token}; domain=.x.com; path=/; secure; samesite=strict';
+    """)
+    logger.info("Twitter auth token set")
+
+def extract_tweets_from_dom(driver, existing_tweets):
+    """Extract tweet data from DOM elements"""
+    new_tweets = []
+    
     try:
-        return await asyncio.wait_for(future, timeout=timeout/1000)
-    except asyncio.TimeoutError:
-        page.remove_listener("response", on_response)
-        return None
+        # Find all tweet elements on the page
+        tweet_elements = driver.find_elements(By.CSS_SELECTOR, '[data-testid="tweet"]')
+        
+        for tweet_elem in tweet_elements:
+            try:
+                # Extract tweet text
+                text_elements = tweet_elem.find_elements(By.CSS_SELECTOR, '[data-testid="tweetText"]')
+                full_text = text_elements[0].text if text_elements else ""
+                
+                # Skip if we already have this tweet
+                if any(t.get("full_text") == full_text for t in existing_tweets if full_text):
+                    continue
+                
+                # Extract username
+                username_elements = tweet_elem.find_elements(By.CSS_SELECTOR, '[data-testid="User-Name"] a')
+                username = ""
+                if username_elements:
+                    href = username_elements[0].get_attribute("href")
+                    if href and "x.com/" in href:
+                        username = href.split("x.com/")[-1]
+                
+                # Extract timestamp
+                time_elements = tweet_elem.find_elements(By.CSS_SELECTOR, 'time')
+                created_at = time_elements[0].get_attribute("datetime") if time_elements else ""
+                
+                # Extract tweet ID from URL if available
+                tweet_id = ""
+                id_elements = tweet_elem.find_elements(By.CSS_SELECTOR, 'a[href*="/status/"]')
+                if id_elements:
+                    href = id_elements[0].get_attribute("href")
+                    if "/status/" in href:
+                        tweet_id = href.split("/status/")[-1].split("?")[0]
+                
+                # Create simplified tweet row
+                row = {
+                    "full_text": full_text,
+                    "username": username,
+                    "created_at": created_at,
+                    "id_str": tweet_id,
+                    "tweet_url": f"https://x.com/{username}/status/{tweet_id}" if username and tweet_id else "",
+                    "image_url": "",  # Will extract later if needed
+                    "location": "",
+                    "in_reply_to_screen_name": "",
+                    "retweet_count": 0,
+                    "favorite_count": 0,
+                    "reply_count": 0,
+                }
+                
+                # Only add if we have meaningful content
+                if full_text.strip():
+                    new_tweets.append(row)
+                    
+            except Exception as e:
+                logger.debug(f"Error extracting tweet data: {e}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Error finding tweet elements: {e}")
+    
+    return new_tweets
 
-async def block_media_requests(route, request):
-    """
-    Block unnecessary media requests while allowing essential functionality.
-    """
-    url = request.url.lower()
-    resource_type = request.resource_type
-    
-    # Block image and video files
-    if resource_type in ['image', 'media']:
-        logger.debug(f"Blocked {resource_type}: {url}")
-        await route.abort()
-        return
-    
-    # Block specific file extensions
-    blocked_extensions = [
-        '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico',
-        '.mp4', '.webm', '.mov', '.avi', '.m4v', '.3gp',
-        '.m3u8', '.ts', '.mp3', '.wav', '.ogg'
-    ]
-    
-    # Check if URL ends with blocked extensions (more precise check)
-    for ext in blocked_extensions:
-        if url.endswith(ext) or f"{ext}?" in url or f"{ext}#" in url:
-            logger.debug(f"Blocked media file: {url}")
-            await route.abort()
-            return
-    
-    # Block specific domains that serve media
-    blocked_domains = [
-        'pbs.twimg.com',  # Twitter images
-        'video.twimg.com',  # Twitter videos
-        'abs.twimg.com/video',  # Twitter video assets
-        'ton.twimg.com',  # Twitter media
-        'abs.twimg.com'
-    ]
-    
-    if any(domain in url for domain in blocked_domains):
-        logger.debug(f"Blocked media domain: {url}")
-        await route.abort()
-        return
-    
-    # Allow GraphQL, API calls, and essential resources
-    allowed_patterns = [
-        'graphql',
-        'api.twitter.com',
-        'api.x.com',
-        '/i/api/',
-        '.js',
-        '.css',
-        'websocket'
-    ]
-    
-    # If it's an allowed pattern or not a blocked type, continue
-    if any(pattern in url for pattern in allowed_patterns) or resource_type in ['xhr', 'fetch', 'document', 'script', 'stylesheet', 'websocket']:
-        await route.continue_()
-    else:
-        # Log what we're blocking for debugging
-        logger.debug(f"Blocked misc request: {resource_type} - {url}")
-        await route.abort()
-
-async def crawl(
+def crawl(
     *,
     access_token: str,
     search_keywords: Optional[str] = None,
@@ -115,6 +135,10 @@ async def crawl(
     search_tab: str = "TOP",
     csv_insert_mode: str = "REPLACE",
 ):
+    global response_data, blocked_requests
+    response_data = []  # Reset global response data
+    blocked_requests = 0  # Reset blocked requests counter
+    
     crawl_mode = "DETAIL" if tweet_thread_url else "SEARCH"
     is_detail_mode = crawl_mode == "DETAIL"
     is_search_mode = crawl_mode == "SEARCH"
@@ -126,59 +150,33 @@ async def crawl(
 
     tweets = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(
-            screen={"width": 1240, "height": 1080},
-            storage_state={
-                "cookies": [
-                    {
-                        "name": "auth_token",
-                        "value": access_token,
-                        "domain": "x.com",
-                        "path": "/",
-                        "expires": -1,
-                        "httpOnly": True,
-                        "secure": True,
-                        "sameSite": "Strict",
-                    }
-                ],
-                "origins": [],
-            },
-        )
-        page = await context.new_page()
-        
-        # Block media requests to reduce bandwidth and improve performance
-        await page.route("**/*", block_media_requests)
-        logger.info("Media request blocking enabled")
-        
-        page.set_default_timeout(60 * 1000)
-        timeline_data = []
-
-        async def on_timeline(data):
-            timeline_data.append(data)
-        await listen_network_requests(page, on_timeline)
-
-        async def start_crawl(twitter_search_url=None):
-            if twitter_search_url is None:
-                twitter_search_url = TWITTER_SEARCH_ADVANCED_URL[search_tab]
-            logger.info("Starting crawl, mode: %s, tab: %s", crawl_mode, search_tab)
-
-            if is_detail_mode:
-                await page.goto(tweet_thread_url)
+    # Use SeleniumBase with UC mode
+    with SB(uc=True, headless=HEADLESS_MODE) as driver:
+        try:
+            logger.info("SeleniumBase driver started with UC mode")
+            
+            # Set authentication
+            set_twitter_auth(driver, access_token)
+            
+            # Navigate to target URL
+            if is_detail_mode and tweet_thread_url:
+                driver.open(tweet_thread_url)
                 logger.info("Goto thread URL: %s", tweet_thread_url)
             else:
-                await page.goto(twitter_search_url)
+                twitter_search_url = TWITTER_SEARCH_ADVANCED_URL[search_tab]
+                driver.open(twitter_search_url)
                 logger.info("Goto search URL: %s", twitter_search_url)
 
-            if "/login" in page.url:
+            # Check if redirected to login
+            if "/login" in driver.get_current_url():
                 logger.error("Invalid twitter auth token, redirected to login.")
-                return
+                return file_path
 
-            if is_search_mode:
+            # Input search keywords and filters
+            if is_search_mode and search_keywords:
                 logger.info("Inputting keywords & filters.")
-                await input_keywords(
-                    page,
+                input_keywords(
+                    driver,
                     search_keywords=search_keywords,
                     from_date=search_from_date,
                     to_date=search_to_date,
@@ -186,108 +184,39 @@ async def crawl(
 
             timeout_count = 0
             additional_tweets = 0
-            rate_limit_count = 0
             last_len = 0
 
-            async def scroll_and_save():
-                nonlocal timeout_count, additional_tweets, rate_limit_count, last_len
+            def scroll_and_save():
+                nonlocal timeout_count, additional_tweets, last_len
                 logger.info("Start crawling and scrolling.")
+                
                 while len(tweets) < target_tweet_count and timeout_count < 20:
-                    if page.is_closed():
-                        logger.warning("Page closed unexpectedly, breaking loop.")
-                        break
                     try:
                         logger.debug("Waiting for timeline response...")
-                        response = await wait_for_response_url(
-                            page, [r"SearchTimeline", r"TweetDetail"], timeout=6000
+                        response = wait_for_response_url(
+                            driver, [r"SearchTimeline", r"TweetDetail"], timeout=6000
                         )
+                        
                         if response is None:
                             timeout_count += 1
                             logger.info("Timeout waiting for response (%d/10), scrolling down.", timeout_count)
-                            await scroll_up_step(page)
-                            await scroll_down(page)
-                            await asyncio.sleep(0.7)
+                            scroll_up_step(driver)
+                            scroll_down(driver)
+                            time.sleep(0.7)
                             if timeout_count >= 10:
                                 logger.error("Too many timeouts, aborting scroll_and_save.")
                                 break
                             continue
+                            
                         timeout_count = 0
-                        try:
-                            data = await response.json()
-                        except Exception:
-                            try:
-                                text = await response.text()
-                            except Exception:
-                                text = ""
-                            if "rate limit" in text.lower():
-                                logger.warning("Rate limited. Backing off %d ms, count %d.",
-                                               calculate_for_rate_limit(rate_limit_count), rate_limit_count)
-                                await page.wait_for_timeout(
-                                    calculate_for_rate_limit(rate_limit_count)
-                                )
-                                rate_limit_count += 1
-                                try:
-                                    await page.click("text=Retry")
-                                    logger.info("Clicked retry after rate limit.")
-                                except Exception:
-                                    logger.warning("Failed to click retry after rate limit.")
-                                continue
-                            logger.error("Unknown response exception, breaking.")
-                            break
-
-                        rate_limit_count = 0
-                        entries = []
-                        if data.get("data", {}).get("threaded_conversation_with_injections_v2"):
-                            entries = (
-                                data["data"]["threaded_conversation_with_injections_v2"]["instructions"][0]["entries"]
-                            )
-                        else:
-                            entries = (
-                                data.get("data", {})
-                                .get("search_by_raw_query", {})
-                                .get("search_timeline", {})
-                                .get("timeline", {})
-                                .get("instructions", [{}])[0]
-                                .get("entries", [])
-                            )
-                        for entry in entries:
-                            content = entry.get("content", {})
-                            if is_search_mode:
-                                item = (
-                                    content.get("itemContent", {})
-                                    or content.get("item", {}).get("itemContent", {})
-                                )
-                            else:
-                                items = content.get("items", [])
-                                if not items:
-                                    continue
-                                item = items[0].get("item", {}).get("itemContent", {})
-                            result = (
-                                item.get("tweet_results", {})
-                                .get("result")
-                            )
-                            if not result:
-                                continue
-                            legacy = result.get("legacy") or result.get("tweet", {}).get("legacy")
-                            user_legacy = (
-                                result.get("core", {})
-                                .get("user_results", {})
-                                .get("result", {})
-                                .get("legacy")
-                            )
-                            user_core = result.get("core").get("user_results", {}).get("result", {}).get("core", {})
-                            if not legacy or not user_legacy:
-                                continue
-                            row = {
-                                **{k: legacy.get(k, "") for k in FILTERED_FIELDS if k in legacy},
-                                "username": user_core.get("screen_name", None),
-                                "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
-                                "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
-                                "location": result.get("location", {"location": ""}).get("location", ""),
-                                "in_reply_to_screen_name": legacy.get("in_reply_to_screen_name", ""),
-                            }
-                            tweets.append(row)
+                        
+                        # Extract tweets using DOM scraping
+                        new_tweets = extract_tweets_from_dom(driver, tweets)
+                        
+                        for tweet in new_tweets:
+                            tweets.append(tweet)
                             additional_tweets += 1
+                            
                             # Logging progress every 10 tweets
                             if len(tweets) % 10 == 0 and len(tweets) != last_len:
                                 logger.info("Crawled %d tweets...", len(tweets))
@@ -295,18 +224,25 @@ async def crawl(
                             if len(tweets) >= target_tweet_count:
                                 logger.info("Target tweet count reached (%d)", len(tweets))
                                 break
-                        await scroll_up_step(page)
-                        await scroll_down(page)
-                        await asyncio.sleep(0.7)
+                                
+                        if len(tweets) >= target_tweet_count:
+                            break
+                            
+                        scroll_up_step(driver)
+                        scroll_down(driver)
+                        time.sleep(0.7)
                         logger.debug("Scrolled down for more tweets. Now at %d tweets.", len(tweets))
+                        
                         if additional_tweets > 20:
                             logger.info("Waiting %d seconds after crawling %d tweets.", delay_each_tweet_seconds, additional_tweets)
-                            await page.wait_for_timeout(delay_each_tweet_seconds * 1000)
+                            time.sleep(delay_each_tweet_seconds)
                             additional_tweets = 0
+                            
                     except Exception as e:
                         logger.error(f"Exception in scroll_and_save: {e}")
                         break
-            await scroll_and_save()
+                        
+            scroll_and_save()
 
             if tweets:
                 df = pd.DataFrame(tweets)
@@ -315,20 +251,13 @@ async def crawl(
             else:
                 logger.warning("No tweets crawled.")
 
-        try:
-            await start_crawl()
         except Exception as e:
-            logger.error(f"Error in start_crawl: {e}")
-        finally:
-            try:
-                await browser.close()
-            except Exception:
-                logger.warning("Browser already closed or failed to close.")
+            logger.error(f"Error in crawl: {e}")
 
     logger.info("Crawl finished, result file: %s", file_path)
     return file_path
 
-async def crawl_buffer(
+def crawl_buffer(
     *,
     access_token: str,
     search_keywords: Optional[str] = None,
@@ -342,7 +271,11 @@ async def crawl_buffer(
     search_tab: str = "TOP",
     csv_insert_mode: str = "REPLACE",
 ) -> io.StringIO:
-    """Crawl tweets but return the CSV data as an in-memory buffer."""
+    """Crawl tweets but return the CSV data as an in-memory buffer using SeleniumBase."""
+    global response_data, blocked_requests
+    response_data = []  # Reset global response data
+    blocked_requests = 0  # Reset blocked requests counter
+    
     crawl_mode = "DETAIL" if tweet_thread_url else "SEARCH"
     is_detail_mode = crawl_mode == "DETAIL"
     is_search_mode = crawl_mode == "SEARCH"
@@ -350,60 +283,33 @@ async def crawl_buffer(
     buffer = io.StringIO()
     tweets = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS_MODE)
-        context = await browser.new_context(
-            screen={"width": 1240, "height": 1080},
-            storage_state={
-                "cookies": [
-                    {
-                        "name": "auth_token",
-                        "value": access_token,
-                        "domain": "x.com",
-                        "path": "/",
-                        "expires": -1,
-                        "httpOnly": True,
-                        "secure": True,
-                        "sameSite": "Strict",
-                    }
-                ],
-                "origins": [],
-            },
-        )
-        page = await context.new_page()
-        
-        # Block media requests to reduce bandwidth and improve performance  
-        await page.route("**/*", block_media_requests)
-        logger.info("Media request blocking enabled")
-        
-        page.set_default_timeout(60 * 1000)
-        timeline_data = []
-
-        async def on_timeline(data):
-            timeline_data.append(data)
-        await listen_network_requests(page, on_timeline)
-
-        async def start_crawl(twitter_search_url=None):
-            if twitter_search_url is None:
-                twitter_search_url = TWITTER_SEARCH_ADVANCED_URL[search_tab]
-            logger.info("Starting crawl, mode: %s, tab: %s", crawl_mode, search_tab)
-
-            if is_detail_mode:
-                await page.goto(tweet_thread_url)
+    # Use SeleniumBase with UC mode
+    with SB(uc=True, headless=True) as driver:  # Always headless for buffer mode
+        try:
+            logger.info("SeleniumBase driver started with UC mode for buffer")
+            
+            # Set authentication
+            set_twitter_auth(driver, access_token)
+            
+            # Navigate to target URL
+            if is_detail_mode and tweet_thread_url:
+                driver.open(tweet_thread_url)
                 logger.info("Goto thread URL: %s", tweet_thread_url)
             else:
-                await page.goto(twitter_search_url)
+                twitter_search_url = TWITTER_SEARCH_ADVANCED_URL[search_tab]
+                driver.open(twitter_search_url)
                 logger.info("Goto search URL: %s", twitter_search_url)
 
-            # Early exit jika token invalid
-            if "/login" in page.url:
+            # Check if redirected to login
+            if "/login" in driver.get_current_url():
                 logger.error("Invalid twitter auth token, redirected to login.")
-                return
+                return buffer
 
-            if is_search_mode:
+            # Input search keywords and filters
+            if is_search_mode and search_keywords:
                 logger.info("Inputting keywords & filters.")
-                await input_keywords(
-                    page,
+                input_keywords(
+                    driver,
                     search_keywords=search_keywords,
                     from_date=search_from_date,
                     to_date=search_to_date,
@@ -411,108 +317,39 @@ async def crawl_buffer(
 
             timeout_count = 0
             additional_tweets = 0
-            rate_limit_count = 0
             last_len = 0
 
-            async def scroll_and_save():
-                nonlocal timeout_count, additional_tweets, rate_limit_count, last_len
+            def scroll_and_save():
+                nonlocal timeout_count, additional_tweets, last_len
                 logger.info("Start crawling and scrolling.")
+                
                 while len(tweets) < target_tweet_count and timeout_count < 20:
-                    if page.is_closed():
-                        logger.warning("Page closed unexpectedly, breaking loop.")
-                        break
                     try:
                         logger.debug("Waiting for timeline response...")
-                        response = await wait_for_response_url(
-                            page, [r"SearchTimeline", r"TweetDetail"], timeout=6000
+                        response = wait_for_response_url(
+                            driver, [r"SearchTimeline", r"TweetDetail"], timeout=6000
                         )
+                        
                         if response is None:
                             timeout_count += 1
                             logger.info("Timeout waiting for response (%d/10), scrolling down.", timeout_count)
-                            await scroll_up_step(page)
-                            await scroll_down(page)
-                            await asyncio.sleep(0.7)
+                            scroll_up_step(driver)
+                            scroll_down(driver)
+                            time.sleep(0.7)
                             if timeout_count >= 10:
                                 logger.error("Too many timeouts, aborting scroll_and_save.")
                                 break
                             continue
+                            
                         timeout_count = 0
-                        try:
-                            data = await response.json()
-                        except Exception:
-                            try:
-                                text = await response.text()
-                            except Exception:
-                                text = ""
-                            if "rate limit" in text.lower():
-                                logger.warning("Rate limited. Backing off %d ms, count %d.",
-                                               calculate_for_rate_limit(rate_limit_count), rate_limit_count)
-                                await page.wait_for_timeout(
-                                    calculate_for_rate_limit(rate_limit_count)
-                                )
-                                rate_limit_count += 1
-                                try:
-                                    await page.click("text=Retry")
-                                    logger.info("Clicked retry after rate limit.")
-                                except Exception:
-                                    logger.warning("Failed to click retry after rate limit.")
-                                continue
-                            logger.error("Unknown response exception, breaking.")
-                            break
-
-                        rate_limit_count = 0
-                        entries = []
-                        if data.get("data", {}).get("threaded_conversation_with_injections_v2"):
-                            entries = (
-                                data["data"]["threaded_conversation_with_injections_v2"]["instructions"][0]["entries"]
-                            )
-                        else:
-                            entries = (
-                                data.get("data", {})
-                                .get("search_by_raw_query", {})
-                                .get("search_timeline", {})
-                                .get("timeline", {})
-                                .get("instructions", [{}])[0]
-                                .get("entries", [])
-                            )
-                        for entry in entries:
-                            content = entry.get("content", {})
-                            if is_search_mode:
-                                item = (
-                                    content.get("itemContent", {})
-                                    or content.get("item", {}).get("itemContent", {})
-                                )
-                            else:
-                                items = content.get("items", [])
-                                if not items:
-                                    continue
-                                item = items[0].get("item", {}).get("itemContent", {})
-                            result = (
-                                item.get("tweet_results", {})
-                                .get("result")
-                            )
-                            if not result:
-                                continue
-                            legacy = result.get("legacy") or result.get("tweet", {}).get("legacy")
-                            user_legacy = (
-                                result.get("core", {})
-                                .get("user_results", {})
-                                .get("result", {})
-                                .get("legacy")
-                            )
-                            user_core = result.get("core").get("user_results", {}).get("result", {}).get("core", {})
-                            if not legacy or not user_legacy:
-                                continue
-                            row = {
-                                **{k: legacy.get(k, "") for k in FILTERED_FIELDS if k in legacy},
-                                "username": user_core.get("screen_name", None),
-                                "tweet_url": f"https://x.com/{user_legacy.get('screen_name')}/status/{legacy.get('id_str')}",
-                                "image_url": legacy.get("entities", {}).get("media", [{}])[0].get("media_url_https", ""),
-                                "location": result.get("location", {"location": ""}).get("location", ""),
-                                "in_reply_to_screen_name": legacy.get("in_reply_to_screen_name", ""),
-                            }
-                            tweets.append(row)
+                        
+                        # Extract tweets using DOM scraping
+                        new_tweets = extract_tweets_from_dom(driver, tweets)
+                        
+                        for tweet in new_tweets:
+                            tweets.append(tweet)
                             additional_tweets += 1
+                            
                             # Logging progress every 10 tweets
                             if len(tweets) % 10 == 0 and len(tweets) != last_len:
                                 logger.info("Crawled %d tweets...", len(tweets))
@@ -520,18 +357,25 @@ async def crawl_buffer(
                             if len(tweets) >= target_tweet_count:
                                 logger.info("Target tweet count reached (%d)", len(tweets))
                                 break
-                        await scroll_up_step(page)
-                        await scroll_down(page)
-                        await asyncio.sleep(0.7)
+                                
+                        if len(tweets) >= target_tweet_count:
+                            break
+                            
+                        scroll_up_step(driver)
+                        scroll_down(driver)
+                        time.sleep(0.7)
                         logger.debug("Scrolled down for more tweets. Now at %d tweets.", len(tweets))
+                        
                         if additional_tweets > 20:
                             logger.info("Waiting %d seconds after crawling %d tweets.", delay_each_tweet_seconds, additional_tweets)
-                            await page.wait_for_timeout(delay_each_tweet_seconds * 1000)
+                            time.sleep(delay_each_tweet_seconds)
                             additional_tweets = 0
+                            
                     except Exception as e:
                         logger.error(f"Exception in scroll_and_save: {e}")
                         break
-            await scroll_and_save()
+                        
+            scroll_and_save()
 
             if tweets:
                 df = pd.DataFrame(tweets)
@@ -541,17 +385,9 @@ async def crawl_buffer(
             else:
                 logger.warning("No tweets crawled.")
 
-        try:
-            await start_crawl()
         except Exception as e:
-            logger.error(f"Error in start_crawl: {e}")
-        finally:
-            try:
-                await browser.close()
-            except Exception:
-                logger.warning("Browser already closed or failed to close.")
+            logger.error(f"Error in crawl_buffer: {e}")
 
     buffer.seek(0)
     logger.info("Crawl buffer finished.")
     return buffer
-
