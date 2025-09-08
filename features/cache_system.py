@@ -5,6 +5,8 @@ import gzip
 from pathlib import Path
 from typing import Dict, Optional
 from logging_setup import logger
+from datetime import datetime
+import glob
 
 class PlaywrightCache:
     """Cache system untuk menyimpan response static files dari Twitter/X.com"""
@@ -12,7 +14,7 @@ class PlaywrightCache:
     def __init__(self, cache_dir: str = "cache"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        self.cache_metadata_file = self.cache_dir / "cache_metadata.json"
+        self.cache_metadata_file = self.cache_dir / f"cache_metadata_{datetime.now().strftime('%d-%m-%Y')}.json"
         self.cache_metadata = self._load_metadata()
         
     def _load_metadata(self) -> Dict:
@@ -23,6 +25,10 @@ class PlaywrightCache:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to load cache metadata: {e}")
+        else:
+            files = glob.glob(f"{str(self.cache_dir)}/*")
+            for file in files:
+                os.remove(file)
         return {}
     
     def _save_metadata(self):
@@ -43,7 +49,7 @@ class PlaywrightCache:
     
     def should_cache_url(self, url: str, content_type: Optional[str] = None) -> bool:
         """Determine if URL should be cached"""
-        not_cachable_patterns = ["video.twimg.com", "/i/videos/", ".mp4", ".mov", ".avi", ".mkv", "pbs.twimg.com", "/emoji/"]
+        not_cachable_patterns = ["video.twimg.com", "/i/videos/", ".mp4", ".mov", ".avi", ".mkv", "pbs.twimg.com", "/emoji/", "/SearchTimeline?"]
         for pattern in not_cachable_patterns:
             if pattern in url:
                 return False
