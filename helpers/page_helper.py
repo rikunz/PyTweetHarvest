@@ -27,8 +27,7 @@ async def scroll_down(page):
     await page.evaluate("""
         window.scrollTo({
             top: document.body.scrollHeight,
-            left: 0,
-            behavior: 'smooth'
+            left: 0
         });
     """)
     await asyncio.sleep(0.7)  

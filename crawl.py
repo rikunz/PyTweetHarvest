@@ -151,8 +151,8 @@ async def crawl(
                             await scroll_down(page)
                             await asyncio.sleep(0.7)
                             if timeout_count >= 10:
-                                logger.error("Too many timeouts, aborting scroll_and_save.")
-                                break
+                                logger.error("Too many timeouts, aborting scroll")
+                                continue
                             continue
                         timeout_count = 0
                         try:
@@ -398,8 +398,8 @@ async def crawl_buffer(
                             await scroll_down(page)
                             await asyncio.sleep(0.7)
                             if timeout_count >= 10:
-                                logger.error("Too many timeouts, aborting scroll_and_save.")
-                                break
+                                logger.error("Too many timeouts, aborting scroll.")
+                                continue
                             continue
                         timeout_count = 0
                         try:
@@ -542,4 +542,3 @@ async def crawl_buffer(
     buffer.seek(0)
     logger.info("Crawl buffer finished.")
     return buffer
-
