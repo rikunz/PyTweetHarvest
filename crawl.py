@@ -150,8 +150,25 @@ async def crawl(
                             await scroll_up_step(page)
                             await scroll_down(page)
                             await asyncio.sleep(0.7)
+                            
                             if timeout_count >= 10:
-                                logger.error("Too many timeouts, aborting scroll")
+                                logger.warning("Too many timeouts (10), trying retry button and backoff.")
+                                try:
+                                    await page.click("text=Retry")
+                                    logger.info("Clicked retry after timeouts.")
+                                except Exception:
+                                    logger.warning("Failed to click retry after timeouts.")
+                                
+                                # Reset timeout count and start backoff
+                                timeout_count = 0
+                                rate_limit_count += 1
+                                backoff_time = calculate_for_rate_limit(rate_limit_count)
+                                logger.warning("Backing off %d ms (attempt %d/10).", backoff_time, rate_limit_count)
+                                await page.wait_for_timeout(backoff_time)
+                                
+                                if rate_limit_count >= 10:
+                                    logger.error("Too many backoff attempts (10), aborting scroll_and_save.")
+                                    break
                                 continue
                             continue
                         timeout_count = 0
@@ -169,6 +186,9 @@ async def crawl(
                                     calculate_for_rate_limit(rate_limit_count)
                                 )
                                 rate_limit_count += 1
+                                if rate_limit_count > 10:
+                                    logger.error("Too many rate limits, aborting scroll_and_save.")
+                                    break
                                 try:
                                     await page.click("text=Retry")
                                     logger.info("Clicked retry after rate limit.")
@@ -397,8 +417,25 @@ async def crawl_buffer(
                             await scroll_up_step(page)
                             await scroll_down(page)
                             await asyncio.sleep(0.7)
+                            
                             if timeout_count >= 10:
-                                logger.error("Too many timeouts, aborting scroll.")
+                                logger.warning("Too many timeouts (10), trying retry button and backoff.")
+                                try:
+                                    await page.click("text=Retry")
+                                    logger.info("Clicked retry after timeouts.")
+                                except Exception:
+                                    logger.warning("Failed to click retry after timeouts.")
+                                
+                                # Reset timeout count and start backoff
+                                timeout_count = 0
+                                rate_limit_count += 1
+                                backoff_time = calculate_for_rate_limit(rate_limit_count)
+                                logger.warning("Backing off %d ms (attempt %d/10).", backoff_time, rate_limit_count)
+                                await page.wait_for_timeout(backoff_time)
+                                
+                                if rate_limit_count >= 10:
+                                    logger.error("Too many backoff attempts (10), aborting scroll_and_save.")
+                                    break
                                 continue
                             continue
                         timeout_count = 0
@@ -416,6 +453,9 @@ async def crawl_buffer(
                                     calculate_for_rate_limit(rate_limit_count)
                                 )
                                 rate_limit_count += 1
+                                if rate_limit_count > 10:
+                                    logger.error("Too many rate limits, aborting scroll_and_save.")
+                                    break
                                 try:
                                     await page.click("text=Retry")
                                     logger.info("Clicked retry after rate limit.")
