@@ -68,7 +68,7 @@ async def crawl(
     tweets = []
 
     # Initialize cache system
-    cache = PlaywrightCache(cache_dir="twitter_cache")
+    cache = PlaywrightCache(cache_dir=".cache", auth_token=access_token)
     cache_stats = cache.get_cache_stats()
     logger.info(f"Cache initialized: {cache_stats['total_files']} files, {cache_stats['total_size_mb']} MB")
 
@@ -336,7 +336,7 @@ async def crawl_buffer(
     tweets = []
 
     # Initialize cache system
-    cache = PlaywrightCache(cache_dir="twitter_cache")
+    cache = PlaywrightCache(cache_dir=".cache", auth_token=access_token)
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS_MODE)
