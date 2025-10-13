@@ -149,7 +149,6 @@ async def crawl(
                             logger.info("Timeout waiting for response (%d/10), scrolling down.", timeout_count)
                             await scroll_up_step(page)
                             await scroll_down(page)
-                            await asyncio.sleep(0.7)
                             
                             if timeout_count >= 10:
                                 logger.warning("Too many timeouts (10), trying retry button and backoff.")
@@ -282,7 +281,6 @@ async def crawl(
                                 break
                         await scroll_up_step(page)
                         await scroll_down(page)
-                        await asyncio.sleep(0.7)
                         logger.debug("Scrolled down for more tweets. Now at %d tweets.", len(tweets))
                         if additional_tweets > 20:
                             logger.info("Waiting %d seconds after crawling %d tweets.", delay_each_tweet_seconds, additional_tweets)
@@ -416,7 +414,6 @@ async def crawl_buffer(
                             logger.info("Timeout waiting for response (%d/10), scrolling down.", timeout_count)
                             await scroll_up_step(page)
                             await scroll_down(page)
-                            await asyncio.sleep(0.7)
                             
                             if timeout_count >= 10:
                                 logger.warning("Too many timeouts (10), trying retry button and backoff.")
@@ -550,7 +547,6 @@ async def crawl_buffer(
                                 break
                         await scroll_up_step(page)
                         await scroll_down(page)
-                        await asyncio.sleep(0.7)
                         logger.debug("Scrolled down for more tweets. Now at %d tweets.", len(tweets))
                         if additional_tweets > 20:
                             logger.info("Waiting %d seconds after crawling %d tweets.", delay_each_tweet_seconds, additional_tweets)
