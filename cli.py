@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--output", dest="output_filename")
     parser.add_argument("--tab", choices=["TOP", "LATEST"], default="TOP")
+    parser.add_argument("--delay-every-30-tweets", type=int, default=15)
+    parser.add_argument("--delay-every-100-tweets", type=int, default=60)
     args = parser.parse_args()
 
     token = args.token or ACCESS_TOKEN
@@ -31,6 +33,8 @@ def main():
             target_tweet_count=args.limit,
             output_filename=args.output_filename,
             search_tab=args.tab,
+            delay_each_tweet_seconds=args.delay_every_30_tweets,
+            delay_every_100_tweets_seconds=args.delay_every_100_tweets,
         )
     )
 

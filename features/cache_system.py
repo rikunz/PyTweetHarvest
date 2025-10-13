@@ -11,10 +11,10 @@ import glob
 class PlaywrightCache:
     """Cache system untuk menyimpan response static files dari Twitter/X.com"""
     
-    def __init__(self, cache_dir: str = "cache"):
+    def __init__(self, cache_dir: str = "cache", auth_token: Optional[str] = None):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        self.cache_metadata_file = self.cache_dir / f"cache_metadata_{datetime.now().strftime('%d-%m-%Y')}.json"
+        self.cache_metadata_file = self.cache_dir / f"cache_metadata_{auth_token}.json"
         self.cache_metadata = self._load_metadata()
         
     def _load_metadata(self) -> Dict:

@@ -18,10 +18,12 @@ class PyTweetHarvest:
         ``.env`` will be used.
     """
 
-    def __init__(self, access_token: Optional[str] = None) -> None:
+    def __init__(self, access_token: Optional[str] = None, delay_each_tweet_seconds: int = 15, delay_every_100_tweets: int = 60) -> None:
         self.access_token = access_token or ACCESS_TOKEN
         if not self.access_token:
             raise ValueError("Twitter access token is required")
+        self.delay_each_tweet_seconds = delay_each_tweet_seconds
+        self.delay_every_100_tweets = delay_every_100_tweets
 
     async def _crawl_async(self, **kwargs) -> io.StringIO:
         return await crawl_buffer(access_token=self.access_token, **kwargs)
@@ -62,6 +64,8 @@ class PyTweetHarvest:
                 search_to_date=to_date,
                 target_tweet_count=limit,
                 search_tab=tab,
+                delay_each_tweet_seconds=self.delay_each_tweet_seconds,
+                delay_every_100_tweets_seconds=self.delay_every_100_tweets,
             )
         )
 
